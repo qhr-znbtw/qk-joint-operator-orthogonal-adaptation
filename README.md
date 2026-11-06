@@ -1,142 +1,142 @@
-# ViT Transfer-Learning Baselines
+# Joint-QK Orthogonal Adaptation for Vision Transformers
 
-A compact and reproducible benchmark for comparing three transfer-learning strategies on a frozen ViT-B/16 backbone:
-
-- **Linear Probe** — train only a task-specific classifier.
-- **LoRA** — adapt the Query and Value projections with rank-8 low-rank updates.
-- **Block OFT** — adapt the Query and Value projections with block-diagonal orthogonal transformations.
-
-The repository uses the same backbone, data splits, optimizer family, schedule, preprocessing, and random seed across all methods. Its purpose is to provide a clean baseline for later research on orthogonal and parameter-efficient fine-tuning methods.
-
-## Benchmark
-
-The experiments use a three-task subset inspired by VTAB, chosen to cover different visual domains:
-
-| Task | Domain | Classes | Train | Validation | Test |
-| --- | --- | ---: | ---: | ---: | ---: |
-| DTD | Natural textures | 47 | 800 | 200 | 1,880 |
-| EuroSAT | Satellite imagery | 10 | 800 | 200 | 5,400 |
-| dSprites Orientation | Structured synthetic images | 16 | 800 | 200 | 73,728 |
-
-The pretrained backbone is `google/vit-base-patch16-224-in21k`. Adapter methods modify the Query and Value projections in all 12 Transformer encoder blocks while keeping the original pretrained parameters frozen.
-
-## Results
-
-All results below use one fixed seed (`42`) and the best validation checkpoint from a 100-epoch run.
-
-| Method | DTD | EuroSAT | dSprites Orientation | Adapter parameters |
-| --- | ---: | ---: | ---: | ---: |
-| Linear Probe | 67.13% | 89.24% | 24.48% | 0 |
-| LoRA, rank 8, Q+V | 69.68% | **94.24%** | **49.58%** | 294,912 |
-| Block OFT, block size 24, Q+V | **70.27%** | 93.76% | 46.07% | **211,968** |
-
-LoRA gives the strongest result on EuroSAT and dSprites Orientation. Block OFT gives the best DTD accuracy while using 28.1% fewer adapter parameters than LoRA. These are single-seed results and should be interpreted as a controlled implementation benchmark rather than a statistically conclusive ranking.
-
-Detailed parameter counts, timings, peak GPU memory, and best epochs are available in the [benchmark report](reports/baseline_benchmark.md).
-
-## Experimental Protocol
-
-| Setting | Value |
-| --- | --- |
-| Backbone | ViT-B/16 pretrained on ImageNet-21k |
-| Input size | 224 x 224 RGB |
-| Epochs | 100 |
-| Warmup | 10 epochs |
-| Schedule | Linear warmup followed by cosine decay |
-| Training batch size | 64 |
-| Evaluation batch size | 128 |
-| Optimizer | AdamW |
-| Adapter learning rate | `1e-4` |
-| Classification-head learning rate | `1e-3` |
-| Weight decay | `1e-4` |
-| Loss | Cross-entropy |
-| Precision | BF16 automatic mixed precision when supported |
-| Data augmentation | None |
-| Random seed | 42 |
-
-## Repository Structure
+This repository studies parameter-efficient adaptation of the **joint attention
+operator** in a pretrained ViT-B/16. Instead of adapting `W_Q` and `W_K`
+independently, each attention head is represented by
 
 ```text
-.
-├── experiments/
-│   ├── linear_probe/          # Frozen backbone and trainable classifier
-│   ├── lora/                  # Rank-8 Query/Value LoRA
-│   └── oft/                   # Block-diagonal Query/Value OFT
-├── vit_core/                  # Shared ViT, data, training, and evaluation code
-├── scripts/                   # Dataset and pretrained-weight preparation
-├── tests/                     # Algebra, integration, and loading checks
-├── results/                   # Formal 100-epoch result files
-├── reports/                   # Benchmark report
-├── data/                      # Local only; ignored by Git
-├── pretrained/                # Local only; ignored by Git
-└── checkpoints/               # Local only; ignored by Git
+M_h = W_{Q,h} W_{K,h}^T,
 ```
 
-The ViT backbone and adaptation layers are implemented directly in PyTorch. Official Hugging Face weights are mapped into this transparent implementation rather than hiding the experiment behind a complete off-the-shelf classification model.
+and a compact SVD is used to apply learnable rotations to its left singular
+vectors, right singular vectors, or both. The study includes dense Cayley
+rotations, BOFT-structured rotations, PSOFT-style support selection,
+LOFT-style task-aware support, learnable singular spectra, and internal plus
+external subspace rotations.
 
-## Installation
+The main value of the repository is an extensive controlled result set,
+including a clear negative result: under the current Mini-VTAB-3 protocol,
+joint-QK adaptation does not outperform standard adaptation of individual
+ViT weight matrices.
 
-Python 3.10 or newer is recommended. Install a CUDA-compatible PyTorch build from the [official installation guide](https://pytorch.org/get-started/locally/), then install the remaining dependencies:
+## Experimental Setting
+
+- Backbone: `google/vit-base-patch16-224-in21k`
+- Tasks: DTD, EuroSAT, and dSprites Orientation
+- Development split: 800 training and 200 validation examples per task
+- Evaluation: full test set
+- Seed: 42
+- Joint-QK methods: 100 epochs unless documented otherwise
+- Data, pretrained weights, and checkpoints are excluded from Git
+
+## Main Results
+
+| Method | Adapter parameters | DTD | EuroSAT | dSprites | Mean |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Standard LoRA | 294,912 | 69.68 | 94.24 | 49.58 | 71.17 |
+| Standard BOFT | 1,271,808 | 70.32 | 95.41 | 49.99 | **71.90** |
+| QK-PSOFT bilateral | 580,608 | 68.35 | 93.76 | 46.17 | 69.43 |
+| QK-BOFT bilateral | 138,240 | **69.89** | 92.91 | 47.11 | **69.97** |
+| QK-BOFT + unconstrained spectrum | 147,456 | 69.15 | 92.94 | 46.92 | 69.67 |
+| QK-BOFT + global external rotations | 244,224 | 68.88 | 93.22 | 46.74 | 69.61 |
+| QK-BOFT + layer-wise external rotations | 1,410,048 | 68.51 | **93.74** | **47.14** | 69.80 |
+| Best QK-LOFT configuration | 149,040 | 68.88 | 93.11 | 46.84 | 69.61 |
+
+Values are percentages. These are single-seed results; differences below
+approximately one percentage point should not be interpreted as statistically
+conclusive.
+
+The layer-wise internal/external design uses more parameters than standard
+BOFT while scoring 2.10 points lower in mean accuracy. This suggests that the
+limitation is structural rather than a missing local rotation parameterization:
+forming `W_Q W_K^T` removes independent `Q`/`K` degrees of freedom, while
+internal SVD rotations preserve fixed ambient subspaces and external rotations
+recover that mobility only at substantial parameter cost.
+
+See [the complete experiment summary](reports/all_experiment_results_summary.md)
+for every result and protocol caveat.
+
+## Implemented Method Families
+
+```text
+experiments/
+├── linear_probe/                         # frozen-backbone baseline
+├── lora/                                 # standard LoRA baseline
+├── oft/                                  # standard block-OFT baseline
+├── qk_svd_oft/                           # common joint-QK/SVD machinery
+├── qk_psoft_left/                        # dense left rotation
+├── qk_psoft_right/                       # dense right rotation
+├── qk_psoft_bilateral/                   # dense bilateral rotation
+├── qk_boft_left/                         # BOFT left rotation
+├── qk_boft_right/                        # BOFT right rotation
+├── qk_boft_bilateral/                    # BOFT bilateral rotation
+├── qk_boft_bilateral_spectrum/           # learnable singular spectrum
+├── qk_loft/                              # Principal/GradSVD/SkewGrad support
+├── qk_boft_internal_external/            # globally shared external rotations
+└── qk_boft_layerwise_internal_external/  # layer-wise external rotations
+```
+
+Shared ViT, data-loading, training, and evaluation code lives in `vit_core/`.
+Formal JSON outputs are in `results/`, detailed interpretations are in
+`reports/`, and algebra/integration checks are in `tests/`.
+
+## Installation and Preparation
+
+Python 3.10 or newer is recommended. Install a CUDA-compatible PyTorch build,
+then install the remaining dependencies:
 
 ```bash
 pip install -r requirements.txt
-```
-
-## Data and Weights
-
-Download DTD and EuroSAT:
-
-```bash
 python -m scripts.download_mini_vtab
-```
-
-Prepare dSprites Orientation:
-
-```bash
 python -m scripts.prepare_dsprites_orientation
-```
-
-Download the pretrained ViT-B/16 weights:
-
-```bash
 python -m scripts.download_pretrained_model
 ```
 
-Datasets, pretrained weights, checkpoints, and model binaries are intentionally excluded from Git.
+## Running Representative Experiments
 
-## Running the Baselines
-
-Each entry point requires one of `dtd`, `eurosat`, or `dsprites_orientation`.
+Each command accepts `dtd`, `eurosat`, or `dsprites_orientation`.
 
 ```bash
-# Frozen-backbone linear probe
-python -m experiments.linear_probe.run_linear_probe --task dtd
+# Dense joint-QK rotations
+python -m experiments.qk_psoft_left.run_qk_psoft_left --task dtd
+python -m experiments.qk_psoft_right.run_qk_psoft_right --task dtd
+python -m experiments.qk_psoft_bilateral.run_qk_psoft_bilateral --task dtd
 
-# LoRA
-python -m experiments.lora.run_lora --task dtd
-
-# Block OFT
-python -m experiments.oft.run_oft --task dtd
+# Structured BOFT rotations
+python -m experiments.qk_boft_left.run_qk_boft_left --task dtd
+python -m experiments.qk_boft_right.run_qk_boft_right --task dtd
+python -m experiments.qk_boft_bilateral.run_qk_boft_bilateral --task dtd
 ```
 
-Replace `dtd` with another supported task to reproduce the remaining results. The best validation checkpoint and a JSON result summary are saved automatically.
+The exact entry points and hyperparameters for the larger factorial studies are
+documented in their corresponding experiment directories and reports.
 
 ## Verification
 
+Run the complete lightweight test suite with:
+
 ```bash
-python -m tests.test_pretrained_loading
-python -m tests.test_linear_probe
-python -m tests.test_lora
-python -m tests.test_oft
+python -m pytest tests
 ```
 
-## Scope
+The tests cover head decomposition, exact initialization, pretrained loading,
+gradient flow, orthogonality, spectrum parameterization, and each joint-QK
+adapter family.
 
-This repository deliberately contains only three standard baselines. More experimental methods such as HRA and HOFT can be developed in a separate research repository while reusing the protocol defined here.
+## Interpretation and Scope
+
+This is an exploratory undergraduate research codebase, not a claim of a new
+state-of-the-art method. It is retained because it provides:
+
+1. a transparent implementation of SVD-based joint-attention adaptation;
+2. matched left/right/bilateral and support-selection ablations;
+3. parameter, timing, memory, and accuracy evidence for unsuccessful variants;
+4. a reproducible basis for analyzing why adapting a composed operator can be
+   weaker than adapting its factors independently.
 
 ## References
 
 - [An Image is Worth 16x16 Words](https://arxiv.org/abs/2010.11929)
 - [Visual Task Adaptation Benchmark](https://arxiv.org/abs/1910.04867)
-- [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
-- [Controlling Text-to-Image Diffusion by Orthogonal Finetuning](https://arxiv.org/abs/2306.07280)
+- [LoRA](https://arxiv.org/abs/2106.09685)
+- [Orthogonal Finetuning](https://arxiv.org/abs/2306.07280)

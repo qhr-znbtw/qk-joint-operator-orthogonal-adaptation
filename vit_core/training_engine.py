@@ -1,6 +1,7 @@
 """Training loops shared by all transfer-learning experiments."""
 
 from pathlib import Path
+from typing import Callable
 
 import torch
 from torch import nn
@@ -65,6 +66,7 @@ def train(
     num_epochs: int,
     checkpoint_path: str | Path,
     scheduler: LRScheduler | None = None,
+    epoch_metrics_fn: Callable[[nn.Module], dict[str, float]] | None = None,
 ) -> list[dict[str, float | int]]:
     """Train fixed epochs and restore the best validation checkpoint."""
     model.to(device)
@@ -98,6 +100,14 @@ def train(
             "val_loss": val_metrics["loss"],
             "val_accuracy": val_metrics["accuracy"],
         }
+        if epoch_metrics_fn is not None:
+            extra_metrics = epoch_metrics_fn(model)
+            duplicate_keys = set(epoch_metrics) & set(extra_metrics)
+            if duplicate_keys:
+                raise KeyError(
+                    f"Extra epoch metrics duplicate existing keys: {duplicate_keys}"
+                )
+            epoch_metrics.update(extra_metrics)
         history.append(epoch_metrics)
 
         print(
